@@ -6,7 +6,7 @@ const mongoose = require('mongoose');
 
 const PROXY_URL = 'http://localhost:4873';
 const CACHE_DIR = path.join(__dirname, 'storage');
-const MONGODB_URI = 'mongodb://localhost:27017/codecache';
+const MONGODB_URI = 'mongodb://localhost:27017/packkit';
 
 const colors = {
     reset: '\x1b[0m',

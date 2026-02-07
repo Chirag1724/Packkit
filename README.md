@@ -60,7 +60,7 @@ npm run dev
 ## Project Structure
 
 ```
-codecache/
+Packkit/
 ├── backend/              # Express server, AI services, RAG
 │   ├── services/        # ai.js, rag.js, scraper.js
 │   └── storage/         # Data persistence

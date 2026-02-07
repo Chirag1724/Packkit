@@ -1,4 +1,4 @@
-# How to Run the CodeCache Backend
+# How to Run the che Backend
 
 ## Prerequisites
 
@@ -66,7 +66,7 @@ ollama serve
 In a third terminal, navigate to the backend folder and start the server:
 
 ```bash
-cd c:\Users\mayan\Documents\1\codecache\backend
+cd c:\Users\mayan\Documents\1\che\backend
 npm start
 ```
 
@@ -212,7 +212,7 @@ ollama serve
 
 **Terminal 3** (Backend):
 ```bash
-cd c:\Users\mayan\Documents\1\codecache\backend
+cd c:\Users\mayan\Documents\1\che\backend
 npm config set registry https://registry.npmjs.org/
 npm install
 npm start

@@ -39,9 +39,9 @@ app.use((req, res, next) => {
   next();
 });
 //database
-mongoose.connect('mongodb://localhost:27017/codecache')
+mongoose.connect('mongodb://localhost:27017/Packkit')
   .then(async () => {
-    console.log(' MongoDB Connected');
+    console.log(' MongoDB Connected Succesfully....');
 
     try {
       await initializeVectorIndices();
@@ -70,8 +70,12 @@ DocumentationSchema.index({ content: 'text', packageName: 'text' });
 const Documentation = mongoose.model('Documentation', DocumentationSchema);
 
 fs.ensureDirSync(CACHE_DIR);
-//routes
-//froce sracpe route
+
+// ========================
+// API ROUTES (must come BEFORE dynamic routes)
+// ========================
+
+// Force scrape route
 app.get('/force-scrape/:name', async (req, res) => {
   const { name } = req.params;
   console.log(` manually triggering scrape for: ${name}`);
@@ -98,6 +102,7 @@ app.get('/force-scrape/:name', async (req, res) => {
   }
 });
 
+// Chat API
 app.post('/api/chat', async (req, res) => {
   const { question } = req.body;
   console.log(` User asked: ${question}`);
@@ -156,7 +161,83 @@ app.post('/api/chat', async (req, res) => {
     });
   }
 });
-//proxy routes
+
+// RAG Stats API
+app.get('/api/stats', async (req, res) => {
+  try {
+    const stats = await getRAGStats();
+    res.json(stats);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Vector Stats API
+app.get('/api/vector-stats', async (req, res) => {
+  try {
+    const stats = await getVectorOptimizationStats();
+    res.json(stats);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Hybrid Search API
+app.post('/api/hybrid-search', async (req, res) => {
+  const { query } = req.body;
+  console.log(` hybrid search: ${query}`);
+
+  try {
+    const startTime = Date.now();
+    const results = await hybridSearch(query, 5);
+    const elapsed = Date.now() - startTime;
+
+    res.json({
+      query,
+      results: results.map(r => ({
+        packageName: r.packageName,
+        text: r.text?.substring(0, 150) + '...',
+        vectorScore: r.vectorScore?.toFixed(3),
+        keywordScore: r.keywordScore,
+        combinedScore: r.combinedScore?.toFixed(3)
+      })),
+      responseTime: elapsed
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Rebuild Embeddings API
+app.post('/api/rebuild-embeddings/:packageName', async (req, res) => {
+  const { packageName } = req.params;
+  console.log(` rebuilding embeddings for ${packageName}`);
+
+  try {
+    const { rebuildEmbeddings } = require('./services/rag');
+    const result = await rebuildEmbeddings(packageName);
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Security Stats API
+app.get('/api/security-stats', async (req, res) => {
+  try {
+    const stats = await getSecurityStats();
+    res.json(stats);
+  } catch (err) {
+    console.error('Security stats error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ========================
+// PROXY ROUTES (must come AFTER API routes)
+// ========================
+
+// Package metadata proxy
 app.get('/:name', async (req, res) => {
   try {
     const { name } = req.params;
@@ -174,12 +255,13 @@ app.get('/:name', async (req, res) => {
   }
 });
 
+// Package tarball proxy
 app.get('/:name/-/:filename', async (req, res) => {
   const { name, filename } = req.params;
   const filePath = path.join(CACHE_DIR, filename);
 
   // Extract version from filename (e.g., package-1.2.3.tgz)
-  const versionMatch = filename.match(/-([\d\.]+(?:-[\w\.]+)?)\.tgz$/);
+  const versionMatch = filename.match(/-[\d\.]+(?:-[\w\.]+)?\.tgz$/);
   const version = versionMatch ? versionMatch[1] : null;
 
   if (fs.existsSync(filePath)) {
@@ -256,70 +338,6 @@ app.get('/:name/-/:filename', async (req, res) => {
     if (!res.headersSent) {
       res.status(500).send("DL Error");
     }
-  }
-});
-
-app.get('/api/stats', async (req, res) => {
-  try {
-    const stats = await getRAGStats();
-    res.json(stats);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-app.get('/api/vector-stats', async (req, res) => {
-  try {
-    const stats = await getVectorOptimizationStats();
-    res.json(stats);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-app.post('/api/hybrid-search', async (req, res) => {
-  const { query } = req.body;
-  console.log(` hybrid search: ${query}`);
-
-  try {
-    const startTime = Date.now();
-    const results = await hybridSearch(query, 5);
-    const elapsed = Date.now() - startTime;
-
-    res.json({
-      query,
-      results: results.map(r => ({
-        packageName: r.packageName,
-        text: r.text?.substring(0, 150) + '...',
-        vectorScore: r.vectorScore?.toFixed(3),
-        keywordScore: r.keywordScore,
-        combinedScore: r.combinedScore?.toFixed(3)
-      })),
-      responseTime: elapsed
-    });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-app.post('/api/rebuild-embeddings/:packageName', async (req, res) => {
-  const { packageName } = req.params;
-  console.log(` rebuilding embeddings for ${packageName}`);
-
-  try {
-    const { rebuildEmbeddings } = require('./services/rag');
-    const result = await rebuildEmbeddings(packageName);
-    res.json(result);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-app.get('/api/security-stats', async (req, res) => {
-  try {
-    const stats = await getSecurityStats();
-    res.json(stats);
-  } catch (err) {
-    console.error('Security stats error:', err.message);
-    res.status(500).json({ error: err.message });
   }
 });
 
