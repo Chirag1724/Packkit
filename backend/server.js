@@ -7,16 +7,20 @@ const cors = require('cors');
 
 const { scrapeDocs } = require('./services/scraper');
 const { askOllama } = require('./services/ai');
-const { 
-  storeDocumentWithEmbeddings, 
-  findRelevantChunks, 
-  getCachedResponse, 
+const {
+  storeDocumentWithEmbeddings,
+  findRelevantChunks,
+  getCachedResponse,
   cacheResponse,
   getRAGStats,
   initializeVectorIndices,
   hybridSearch,
   getVectorOptimizationStats
 } = require('./services/rag');
+const {
+  verifyPackageIntegrity,
+  getSecurityStats
+} = require('./services/security');
 
 const app = express();
 app.use(cors());
@@ -25,6 +29,11 @@ app.use(express.json());
 const PORT = 4873;
 const UPSTREAM_URL = 'https://registry.npmjs.org';
 const CACHE_DIR = path.join(__dirname, 'storage');
+const https = require('https');
+const httpsAgent = new https.Agent({
+  rejectUnauthorized: true,
+  minVersion: 'TLSv1.2'
+});
 app.use((req, res, next) => {
   console.log(` [${new Date().toLocaleTimeString()}] ${req.method} ${req.url}`);
   next();
@@ -33,7 +42,7 @@ app.use((req, res, next) => {
 mongoose.connect('mongodb://localhost:27017/codecache')
   .then(async () => {
     console.log(' MongoDB Connected');
-    // Initialize vector indices for optimization
+
     try {
       await initializeVectorIndices();
     } catch (err) {
@@ -43,15 +52,18 @@ mongoose.connect('mongodb://localhost:27017/codecache')
   .catch(err => console.error(' DB Error:', err));
 
 const PackageSchema = new mongoose.Schema({
-  name: String, 
-  version: String, 
-  integrity: String, 
-  cachedPath: String
+  name: String,
+  version: String,
+  integrity: String,
+  cachedPath: String,
+  verified: { type: Boolean, default: false },
+  verificationDate: Date,
+  checksumAlgorithm: { type: String, default: 'sha512' }
 });
 const Package = mongoose.model('Package', PackageSchema);
 
 const DocumentationSchema = new mongoose.Schema({
-  packageName: String, 
+  packageName: String,
   content: String
 });
 DocumentationSchema.index({ content: 'text', packageName: 'text' });
@@ -63,19 +75,19 @@ fs.ensureDirSync(CACHE_DIR);
 app.get('/force-scrape/:name', async (req, res) => {
   const { name } = req.params;
   console.log(` manually triggering scrape for: ${name}`);
-  
+
   try {
-    
+
     const content = await scrapeDocs(name);
-    
+
     if (content) {
-  
+
       await Documentation.deleteMany({ packageName: name });
-     
+
       await Documentation.create({ packageName: name, content });
-      
+
       await storeDocumentWithEmbeddings(name, content);
-      
+
       console.log(` MANUALLY SAVED DOCS FOR: ${name}`);
       return res.send(`<h1>Success!</h1><p>Scraped ${content.length} chars for <b>${name}</b>. Embeddings generated. Check Compass now.</p>`);
     } else {
@@ -89,58 +101,58 @@ app.get('/force-scrape/:name', async (req, res) => {
 app.post('/api/chat', async (req, res) => {
   const { question } = req.body;
   console.log(` User asked: ${question}`);
-  
+
   try {
     const startTime = Date.now();
-    
-   
+
+
     const cached = await getCachedResponse(question);
     if (cached) {
       console.log(`⚡ Cache HIT! Response in ${Date.now() - startTime}ms`);
-      return res.json({ 
-        answer: cached, 
+      return res.json({
+        answer: cached,
         source: 'cache',
         responseTime: Date.now() - startTime
       });
     }
-    
-    
+
+
     const relevantChunks = await findRelevantChunks(question, 3);
-    
+
     if (relevantChunks.length === 0) {
-      return res.json({ 
-        answer: "No relevant documentation found. Try scraping a package first.", 
+      return res.json({
+        answer: "No relevant documentation found. Try scraping a package first.",
         source: null,
         responseTime: Date.now() - startTime
       });
     }
-    
+
     const context = relevantChunks
-      .map((chunk, i) => `[Chunk ${i+1}]\n${chunk.text}`)
+      .map((chunk, i) => `[Chunk ${i + 1}]\n${chunk.text}`)
       .join('\n\n');
-    
+
     console.log(` Using ${relevantChunks.length} chunks (${context.length} chars total)`);
-    
-    
+
+
     const answer = await askOllama(question, context);
-    
-    
+
+
     await cacheResponse(question, answer);
-    
+
     const elapsed = Date.now() - startTime;
     console.log(`response ready in ${elapsed}ms`);
-    
-    res.json({ 
-      answer, 
+
+    res.json({
+      answer,
       source: relevantChunks[0]?.packageName || null,
       responseTime: elapsed,
       context_length: context.length
     });
   } catch (err) {
     console.error('Chat error:', err);
-    res.status(500).json({ 
-      answer: "Error processing your question.", 
-      source: null 
+    res.status(500).json({
+      answer: "Error processing your question.",
+      source: null
     });
   }
 });
@@ -148,51 +160,89 @@ app.post('/api/chat', async (req, res) => {
 app.get('/:name', async (req, res) => {
   try {
     const { name } = req.params;
-    const response = await axios.get(`${UPSTREAM_URL}/${name}`);
+    const response = await axios.get(`${UPSTREAM_URL}/${name}`, {
+      httpsAgent: httpsAgent  // Use secure HTTPS agent
+    });
     const data = response.data;
     Object.keys(data.versions).forEach(v => {
       data.versions[v].dist.tarball = data.versions[v].dist.tarball.replace(UPSTREAM_URL, `http://localhost:${PORT}`);
     });
     res.json(data);
-  } catch (e) { 
+  } catch (e) {
     console.error('Proxy error:', e.message);
-    res.status(500).send(e.message); 
+    res.status(500).send(e.message);
   }
 });
 
 app.get('/:name/-/:filename', async (req, res) => {
   const { name, filename } = req.params;
   const filePath = path.join(CACHE_DIR, filename);
-  
+
+  // Extract version from filename (e.g., package-1.2.3.tgz)
+  const versionMatch = filename.match(/-([\d\.]+(?:-[\w\.]+)?)\.tgz$/);
+  const version = versionMatch ? versionMatch[1] : null;
+
   if (fs.existsSync(filePath)) {
     console.log(` HIT: ${filename}`);
     return fs.createReadStream(filePath).pipe(res);
   }
-  
+
   console.log(` MISS: Downloading ${filename}...`);
   try {
-    const upstream = await axios({ 
-      method: 'get', 
-      url: `${UPSTREAM_URL}/${name}/-/${filename}`, 
-      responseType: 'stream' 
+    const upstream = await axios({
+      method: 'get',
+      url: `${UPSTREAM_URL}/${name}/-/${filename}`,
+      responseType: 'stream',
+      httpsAgent: httpsAgent  // Use secure HTTPS agent
     });
     const fileWriter = fs.createWriteStream(filePath);
-    
+
     upstream.data.pipe(res);
     upstream.data.pipe(fileWriter);
-    
+
     fileWriter.on('finish', async () => {
       console.log(`file saved: ${filename}`);
-      await Package.create({ name, cachedPath: filePath, integrity: 'sha512-placeholder' });
-      
-      // Auto-trigger scrape if no docs exist
+
+
+      if (version) {
+        const verification = await verifyPackageIntegrity(name, version, filePath);
+
+        if (!verification.verified) {
+          console.error(`  SECURITY: ${filename} failed verification - not caching`);
+
+          return;
+        }
+
+
+        await Package.create({
+          name,
+          version,
+          cachedPath: filePath,
+          integrity: verification.checksum,
+          verified: true,
+          verificationDate: new Date(),
+          checksumAlgorithm: 'sha512'
+        });
+
+        console.log(` Package verified and cached successfully`);
+      } else {
+
+        await Package.create({
+          name,
+          cachedPath: filePath,
+          integrity: 'unknown',
+          verified: false
+        });
+      }
+
+
       const hasDocs = await Documentation.exists({ packageName: name });
       if (!hasDocs) {
         console.log(` auto-scraping docs for: ${name}`);
         scrapeDocs(name).then(content => {
           if (content) {
             Documentation.create({ packageName: name, content });
-           
+
             storeDocumentWithEmbeddings(name, content);
             console.log(`auto-saved docs for: ${name}`);
           }
@@ -204,7 +254,7 @@ app.get('/:name/-/:filename', async (req, res) => {
   } catch (e) {
     console.error('Download error:', e.message);
     if (!res.headersSent) {
-      res.status(500).send("DL Error"); 
+      res.status(500).send("DL Error");
     }
   }
 });
@@ -229,12 +279,12 @@ app.get('/api/vector-stats', async (req, res) => {
 app.post('/api/hybrid-search', async (req, res) => {
   const { query } = req.body;
   console.log(` hybrid search: ${query}`);
-  
+
   try {
     const startTime = Date.now();
     const results = await hybridSearch(query, 5);
     const elapsed = Date.now() - startTime;
-    
+
     res.json({
       query,
       results: results.map(r => ({
@@ -254,12 +304,21 @@ app.post('/api/hybrid-search', async (req, res) => {
 app.post('/api/rebuild-embeddings/:packageName', async (req, res) => {
   const { packageName } = req.params;
   console.log(` rebuilding embeddings for ${packageName}`);
-  
+
   try {
     const { rebuildEmbeddings } = require('./services/rag');
     const result = await rebuildEmbeddings(packageName);
     res.json(result);
   } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+app.get('/api/security-stats', async (req, res) => {
+  try {
+    const stats = await getSecurityStats();
+    res.json(stats);
+  } catch (err) {
+    console.error('Security stats error:', err.message);
     res.status(500).json({ error: err.message });
   }
 });
