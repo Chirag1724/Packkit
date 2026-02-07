@@ -1,82 +1,49 @@
-# Packkit
+# PackKit
 
-An AI-powered NPM package registry cache with intelligent documentation retrieval and smart caching mechanisms.
+A private npm package registry with AI-powered documentation assistant.
 
 ## Features
 
-- **NPM Registry Proxy**: Efficient caching layer for NPM packages
-- **AI-Powered Search**: Intelligent package documentation retrieval using Ollama LLM
-- **Vector Embeddings**: RAG (Retrieval-Augmented Generation) with semantic search
-- **Real-time Caching**: Smart cache optimization and statistics
-- **Web Scraping**: Automated documentation scraping and indexing
-- **Responsive UI**: React + Vite frontend with analytics dashboard
+- **NPM Proxy**: Cache packages locally with integrity verification
+- **AI Chatbot**: Ask questions about package documentation
+- **RAG System**: Vector search with semantic embeddings
+- **Security**: SHA-512 checksum verification against npm registry
+- **Admin Dashboard**: Monitor system stats and health
 
-## Tech Stack
+## Requirements
 
-**Backend:**
-- Node.js + Express
-- MongoDB for data persistence
-- Ollama for embeddings & LLM inference
-- Axios for HTTP requests
-
-**Frontend:**
-- React 18 + Vite
-- Recharts for data visualization
-- Axios for API integration
-
-## Prerequisites
-
-- Node.js v14+
-- MongoDB Community Edition
-- Ollama
-- npm
+- Node.js 18+
+- MongoDB
+- Ollama with models: `llama3.2:latest`, `nomic-embed-text`
 
 ## Quick Start
 
-### Backend Setup
 ```bash
-cd backend
-npm install
-npm start
+# Start everything (Windows)
+.\start.bat
+
+# Or manually:
+cd backend && npm install && node server.js
+cd frontend && npm install && npm run dev
 ```
 
-**Ollama Models Required:**
-```bash
-ollama pull nomic-embed-text
-ollama pull llama3.2:3b
-```
+## URLs
 
-### Frontend Setup
-```bash
-cd frontend
-npm install
-npm run dev
-```
+| Service | URL |
+|---------|-----|
+| Chat | http://localhost:5174 |
+| Admin | http://localhost:5174/admin |
+| API | http://localhost:4873 |
 
-**Access the app at:** `http://localhost:5173`
+## API Endpoints
 
-**API Server runs at:** `http://localhost:4873`
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/api/chat` | Ask the AI assistant |
+| GET | `/api/stats` | RAG statistics |
+| GET | `/api/security-stats` | Security stats |
+| GET | `/force-scrape/:name` | Index package docs |
 
-## Project Structure
+## License
 
-```
-Packkit/
-├── backend/              # Express server, AI services, RAG
-│   ├── services/        # ai.js, rag.js, scraper.js
-│   └── storage/         # Data persistence
-├── frontend/            # Main React app
-│   ├── src/            # Components & pages
-│   ├── admin/          # Admin dashboard
-│   └── public/         # Public docs site
-└── docker-compose.yml  # Docker setup
-```
-
-## Teammates
-
-Big thanks to my amazing hackathon teammates!
-
-<div align="left">
-
-[![Contributors](https://contrib.rocks/image?repo=Chirag1724/Packkit)](https://github.com/Chirag1724/Packkit/graphs/contributors)
-
-</div>
+MIT
