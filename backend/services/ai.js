@@ -1,86 +1,66 @@
-/*
-====================================================================================
-This is the module that requests the Ai (Ollama) for  context aware  answers. The ai 
-is fed the context via fullPrompt
-====================================================================================
-*/
 const axios = require('axios');
-const OLLAMA_URL = 'http://localhost:11434/api/generate';
 
-async function askOllama(question, context) {
-  
-  const fullPrompt = `
-    You are an expert offline coding assistant. 
-    Use the following documentation to answer the user's question concisely.
-    
-    DOCUMENTATION CONTEXT:
-    ${context}
-    
-    USER QUESTION:
-    ${question}
-    
-    answer with code example if possible:
-  `;
-  
+const OLLAMA_URL = 'http://localhost:11434/api';
+
+// Generate embeddings using Ollama (fast, semantic search)
+async function generateEmbedding(text) {
   try {
-    console.log(" sending to ollama...");
-    const startTime = Date.now(); 
-    
-    const response = await axios.post(OLLAMA_URL, {
-      model: "llama3.2:3b", 
-      prompt: fullPrompt,
-      stream: true 
-    }, {
-      responseType: 'stream' 
+    // Try the standard embeddings endpoint
+    const response = await axios.post(`${OLLAMA_URL}/embeddings`, {
+      model: "nomic-embed-text",
+      prompt: text
     });
-    
-    let fullResponse = '';
-    let tokenCount = 0;
-    let lastLogTime = startTime;
-    
-    return new Promise((resolve, reject) => {
-      response.data.on('data', (chunk) => {
-        const lines = chunk.toString().split('\n').filter(line => line.trim());
-        
-        lines.forEach(line => {
-          try { 
-            const parsed = JSON.parse(line);
-            if (parsed.response) {
-              fullResponse += parsed.response;
-              tokenCount++;
-              
-              // logs
-              const now = Date.now();
-              const timeSinceStart = now - startTime;
-              const timeSinceLast = now - lastLogTime;
-              
-              process.stdout.write(`\r tokens: ${tokenCount} | Time: ${timeSinceStart}ms | Last token: ${timeSinceLast}ms`);
-              
-              lastLogTime = now;
-            }
-            
-            if (parsed.done) {
-              const totalTime = Date.now() - startTime;
-              console.log(`\n generation complete!`);
-              console.log(` stats: ${tokenCount} tokens in ${totalTime}ms (${(tokenCount / (totalTime / 1000)).toFixed(2)} tokens/sec)`);
-              resolve(fullResponse);
-            }
-          } catch (e) {
-            
-          }
-        });
-      });
-      
-      response.data.on('error', (error) => {
-        console.error("\n stream error:", error.message);
-        reject(error);
-      });
-    });
-    
+    return response.data.embedding || response.data.embeddings?.[0] || null;
   } catch (error) {
-    console.error(" ai error:", error.message);
-    return "i can't think right now. is Ollama running? (Run 'ollama serve')";
+    // Fallback: Check if model is available and provide helpful error
+    if (error.response?.status === 404) {
+      console.error(`⚠️  Embedding model not found. Ensure 'nomic-embed-text' is installed.`);
+      console.error(`   Run: ollama pull nomic-embed-text`);
+    }
+    return null;
   }
 }
 
-module.exports = { askOllama };
+// Optimized Ollama query with smaller context
+async function askOllama(question, context) {
+  const fullPrompt = `You are an expert coding assistant. Answer the following question using ONLY the provided documentation. Be concise.
+
+DOCUMENTATION:
+${context}
+
+QUESTION: ${question}
+
+Answer (max 300 tokens):`;
+
+  try {
+    console.log("🧠 Querying AI...");
+    const response = await axios.post(`${OLLAMA_URL}/generate`, {
+      model: "llama3.2:3b",
+      prompt: fullPrompt,
+      stream: false,
+      num_predict: 300 // Limit response tokens for faster inference
+    });
+
+    return response.data.response;
+  } catch (error) {
+    console.error("❌ AI Error:", error.message);
+    return "Error: Is Ollama running? (Run 'ollama serve')";
+  }
+}
+
+// Cosine similarity for semantic search
+function cosineSimilarity(a, b) {
+  let dotProduct = 0, normA = 0, normB = 0;
+  for (let i = 0; i < a.length; i++) {
+    dotProduct += a[i] * b[i];
+    normA += a[i] * a[i];
+    normB += b[i] * b[i];
+  }
+  return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
+}
+
+module.exports = {
+  askOllama,
+  generateEmbedding,
+  cosineSimilarity
+};
