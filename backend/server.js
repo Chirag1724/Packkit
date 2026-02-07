@@ -20,7 +20,7 @@ app.use((req, res, next) => {
   console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
   next();
 });
-
+//database connect
 mongoose.connect('mongodb://localhost:27017/codecache')
   .then(() => console.log('MongoDB connected'))
   .catch(err => console.error('DB error:', err));
@@ -41,7 +41,7 @@ DocumentationSchema.index({ content: 'text', packageName: 'text' });
 const Documentation = mongoose.model('Documentation', DocumentationSchema);
 
 fs.ensureDirSync(CACHE_DIR);
-
+//routes
 app.get('/force-scrape/:name', async (req, res) => {
   const { name } = req.params;
   try {
@@ -54,7 +54,7 @@ app.get('/force-scrape/:name', async (req, res) => {
     return res.status(500).send(err.message);
   }
 });
-
+//chat routess
 app.post('/api/chat', async (req, res) => {
   const { question } = req.body;
   try {
@@ -67,7 +67,7 @@ app.post('/api/chat', async (req, res) => {
     res.status(500).json({ answer: 'Error processing request', source: null });
   }
 });
-
+//proxy routes
 app.get('/:name', async (req, res) => {
   try {
     const { name } = req.params;

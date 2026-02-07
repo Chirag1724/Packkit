@@ -7,13 +7,15 @@
 const axios = require('axios');
 
 async function scrapeDocs(packageName) {
-  console.log(`🕷️ Fetching docs for: ${packageName} from Registry...`);
+  console.log(` Fetching docs for: ${packageName} from Registry...`);
 
   try {
     const url = `https://registry.npmjs.org/${packageName}`;
     const { data } = await axios.get(url);
 
     let content = data.readme || '';
+  } catch (error) {
+    console.error(`Error fetching docs for ${packageName}:`, error.message);
   }
 }
 
