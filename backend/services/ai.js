@@ -6,33 +6,36 @@ is fed the context via fullPrompt
 */
 const axios = require('axios');
 
-const OLLAMA_URL = `${process.env.OLLAMA_HOST || 'http://localhost:11434'}/api`
+const OLLAMA_URL = 'http://localhost:11434/api/generate';
 
 async function askOllama(question, context) {
-  const fullPrompt = `You are an expert coding assistant. Answer the following question using ONLY the provided documentation. Be concise.
-
-DOCUMENTATION:
-${context}
-
-QUESTION: ${question}
-
-Answer`;
+  
+  const fullPrompt = `
+    You are an expert offline coding assistant. 
+    Use the following documentation to answer the user's question concisely.
+    
+    DOCUMENTATION CONTEXT:
+    ${context}
+    
+    USER QUESTION:
+    ${question}
+    
+    answer with code example if possible:
+  `;
   
   try {
-    console.log("Querying AI right now...");
-    const response = await axios.post(`${OLLAMA_URL}/generate`, {
-      model: "llama3.2:3b",
+    console.log(" sending to ollama...");
+    const response = await axios.post(OLLAMA_URL, {
+      model: "llama3.2:3b", 
       prompt: fullPrompt,
-      stream: false,
+      stream: false 
     });
     
     return response.data.response;
   } catch (error) {
     console.error("AI Error:", error.message);
-    return "Error: Is Ollama running? (Run 'ollama serve')";
+    return "I cannot think right now. Is Ollama running? (Run 'ollama serve')";
   }
 }
 
-module.exports = { 
-  askOllama,
-};
+module.exports = { askOllama };
