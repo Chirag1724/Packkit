@@ -59,11 +59,11 @@ app.get('/force-scrape/:name', async (req, res) => {
 // route developed for chat
 app.post('/api/chat', async (req, res) => {
   const { question } = req.body;
-  console.log(`💬 User asked: ${question}`);  
+  console.log(` User asked: ${question}`);  
   try {
     const relevantDoc = await Documentation.findOne({ $text: { $search: question } });
     const context = relevantDoc ? relevantDoc.content : "No local docs.";  
-    if (relevantDoc) console.log(`📚 Found context: ${relevantDoc.packageName}`);  
+    if (relevantDoc) console.log(` Found context: ${relevantDoc.packageName}`);  
     const answer = await askOllama(question, context);
     res.json({ answer, source: relevantDoc ? relevantDoc.packageName : null });
   } catch (err) {
