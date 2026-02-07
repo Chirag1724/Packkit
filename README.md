@@ -77,6 +77,6 @@ Big thanks to my amazing hackathon teammates!
 
 <div align="left">
 
-[![Contributors](https://contrib.rocks/image?repo=Chirag1724/Packkit)](https://github.com/Chirag1724/Packkit/graphs/contributors)
+[![Contributors](https://contrib.rocks/image?repo=Chirag1724/Packkit&max=4)](https://github.com/Chirag1724/Packkit/graphs/contributors)
 
 </div>
