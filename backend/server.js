@@ -33,6 +33,9 @@ const httpsAgent = new https.Agent({
   minVersion: 'TLSv1.2'
 });
 
+// Download lock to prevent race conditions when multiple users request the same file
+const downloadLocks = new Map();
+
 app.use((req, res, next) => {
   console.log(`[${new Date().toLocaleTimeString()}] ${req.method} ${req.url}`);
   next();
@@ -110,7 +113,7 @@ app.post('/api/chat', async (req, res) => {
     }
 
     const context = relevantChunks
-      .map((chunk, i) => `[Chunk ${i + 1}]\n${chunk.text}`)
+      .map((chunk, i) => `[Source: ${chunk.packageName} | Chunk ${i + 1}]\n${chunk.text}`)
       .join('\n\n');
 
     const answer = await askOllama(question, context);
@@ -182,19 +185,41 @@ app.get('/api/security-stats', async (req, res) => {
 // NPM Proxy Routes
 
 app.get('/:name', async (req, res) => {
+  const { name } = req.params;
+  const metadataPath = path.join(CACHE_DIR, `${name}.json`);
+
   try {
-    const { name } = req.params;
-    const response = await axios.get(`${UPSTREAM_URL}/${name}`, { httpsAgent });
+    const response = await axios.get(`${UPSTREAM_URL}/${name}`, { httpsAgent, timeout: 5000 });
     const data = response.data;
+
+    // Rewrite tarball URLs to point to this proxy
     Object.keys(data.versions).forEach(v => {
       data.versions[v].dist.tarball = data.versions[v].dist.tarball.replace(
         UPSTREAM_URL,
-        `http://localhost:${PORT}`
+        `http://${req.headers.host}`
       );
     });
+
+    // Cache the metadata for offline use
+    await fs.writeJson(metadataPath, data);
     res.json(data);
   } catch (e) {
-    res.status(500).send(e.message);
+    // OFFLINE FALLBACK: Serve from cache if available
+    if (fs.existsSync(metadataPath)) {
+      console.log(`[Offline] Serving cached metadata for ${name}`);
+      const cachedData = await fs.readJson(metadataPath);
+      // Still need to update the host in case the IP changed since last online run
+      Object.keys(cachedData.versions).forEach(v => {
+        const dist = cachedData.versions[v].dist;
+        const currentHost = `http://${req.headers.host}`;
+        // Detect if the tarball URL needs updating (if it doesn't already match the current host)
+        if (!dist.tarball.includes(currentHost)) {
+          dist.tarball = dist.tarball.replace(/http:\/\/[^\/]+/, currentHost);
+        }
+      });
+      return res.json(cachedData);
+    }
+    res.status(502).send(`Upstream registry unreachable and no local cache for ${name}`);
   }
 });
 
@@ -204,9 +229,31 @@ app.get('/:name/-/:filename', async (req, res) => {
   const versionMatch = filename.match(/-[\d.]+(?:-[\w.]+)?\.tgz$/);
   const version = versionMatch ? versionMatch[1] : null;
 
+  // If file already exists, serve it immediately
   if (fs.existsSync(filePath)) {
     return fs.createReadStream(filePath).pipe(res);
   }
+
+  // Check if another request is already downloading this file
+  if (downloadLocks.has(filename)) {
+    // Wait for the existing download to complete
+    try {
+      await downloadLocks.get(filename);
+      if (fs.existsSync(filePath)) {
+        return fs.createReadStream(filePath).pipe(res);
+      }
+    } catch (err) {
+      // Original download failed, we'll try again below
+    }
+  }
+
+  // Create a promise that resolves when download completes
+  let resolveDownload, rejectDownload;
+  const downloadPromise = new Promise((resolve, reject) => {
+    resolveDownload = resolve;
+    rejectDownload = reject;
+  });
+  downloadLocks.set(filename, downloadPromise);
 
   try {
     const upstream = await axios({
@@ -220,6 +267,9 @@ app.get('/:name/-/:filename', async (req, res) => {
     upstream.data.pipe(fileWriter);
 
     fileWriter.on('finish', async () => {
+      downloadLocks.delete(filename);
+      resolveDownload();
+
       if (version) {
         const verification = await verifyPackageIntegrity(name, version, filePath);
         if (!verification.verified) return;
@@ -246,7 +296,14 @@ app.get('/:name/-/:filename', async (req, res) => {
         }).catch(() => { });
       }
     });
+
+    fileWriter.on('error', (err) => {
+      downloadLocks.delete(filename);
+      rejectDownload(err);
+    });
   } catch (e) {
+    downloadLocks.delete(filename);
+    rejectDownload(e);
     if (!res.headersSent) res.status(500).send('Download error');
   }
 });
@@ -255,14 +312,16 @@ app.listen(PORT, '0.0.0.0', () => {
   const os = require('os');
   const interfaces = os.networkInterfaces();
   let networkIP = 'localhost';
+  const ips = [];
   for (const name of Object.keys(interfaces)) {
     for (const iface of interfaces[name]) {
       if (iface.family === 'IPv4' && !iface.internal) {
-        networkIP = iface.address;
-        break;
+        ips.push(iface.address);
       }
     }
   }
+  // Prioritize LAN IPs (192.168.x.x or 10.x.x.x) over WSL/Virtual (172.x.x.x)
+  networkIP = ips.find(ip => ip.startsWith('192.168.') || ip.startsWith('10.')) || ips[0] || 'localhost';
   console.log(`PackKit server running on port ${PORT}`);
   console.log(`  Local:   http://localhost:${PORT}`);
   console.log(`  Network: http://${networkIP}:${PORT}`);

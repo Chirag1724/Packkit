@@ -10,6 +10,11 @@ const AdminDashboard = () => {
   const [error, setError] = useState(null);
   const [lastUpdated, setLastUpdated] = useState(null);
 
+  // Force Scrape state
+  const [scrapePackage, setScrapePackage] = useState('');
+  const [scrapeLoading, setScrapeLoading] = useState(false);
+  const [scrapeResult, setScrapeResult] = useState(null);
+
   useEffect(() => {
     fetchAllStats();
     const interval = setInterval(fetchAllStats, 30000);
@@ -45,6 +50,27 @@ const AdminDashboard = () => {
       setError(err.message);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleForceScrape = async () => {
+    if (!scrapePackage.trim()) return;
+    setScrapeLoading(true);
+    setScrapeResult(null);
+    try {
+      const apiHost = window.location.hostname;
+      const res = await fetch(`http://${apiHost}:4873/force-scrape/${scrapePackage.trim()}`);
+      const data = await res.json();
+      if (res.ok) {
+        setScrapeResult({ success: true, message: `Indexed ${data.chars} characters from ${data.package}` });
+        fetchAllStats(); // Refresh stats
+      } else {
+        setScrapeResult({ success: false, message: data.error || 'Scrape failed' });
+      }
+    } catch (err) {
+      setScrapeResult({ success: false, message: err.message });
+    } finally {
+      setScrapeLoading(false);
     }
   };
 
@@ -134,6 +160,34 @@ const AdminDashboard = () => {
               description="Documented"
             />
           </div>
+        </section>
+
+        {/* Force Scrape Section */}
+        <section className="dashboard-section">
+          <h2>Index Package Documentation</h2>
+          <div className="scrape-form">
+            <input
+              type="text"
+              className="scrape-input"
+              placeholder="Enter package name (e.g., express, lodash)"
+              value={scrapePackage}
+              onChange={(e) => setScrapePackage(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && handleForceScrape()}
+              disabled={scrapeLoading}
+            />
+            <button
+              className="btn btn-primary"
+              onClick={handleForceScrape}
+              disabled={scrapeLoading || !scrapePackage.trim()}
+            >
+              {scrapeLoading ? 'Indexing...' : 'Index Docs'}
+            </button>
+          </div>
+          {scrapeResult && (
+            <div className={`scrape-result ${scrapeResult.success ? 'success' : 'error'}`}>
+              {scrapeResult.message}
+            </div>
+          )}
         </section>
 
         {/* Vector Stats Section */}
