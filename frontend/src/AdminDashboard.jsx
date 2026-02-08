@@ -15,6 +15,12 @@ const AdminDashboard = () => {
   const [scrapeLoading, setScrapeLoading] = useState(false);
   const [scrapeResult, setScrapeResult] = useState(null);
 
+  // Pre-cache state
+  const [precachePackage, setPrecachePackage] = useState('');
+  const [precacheVersion, setPrecacheVersion] = useState('');
+  const [precacheLoading, setPrecacheLoading] = useState(false);
+  const [precacheResult, setPrecacheResult] = useState(null);
+
   useEffect(() => {
     fetchAllStats();
     const interval = setInterval(fetchAllStats, 30000);
@@ -71,6 +77,40 @@ const AdminDashboard = () => {
       setScrapeResult({ success: false, message: err.message });
     } finally {
       setScrapeLoading(false);
+    }
+  };
+
+  const handlePrecache = async () => {
+    if (!precachePackage.trim()) return;
+    setPrecacheLoading(true);
+    setPrecacheResult(null);
+    try {
+      const apiHost = window.location.hostname;
+      const res = await fetch(`http://${apiHost}:4873/api/precache`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          packageName: precachePackage.trim(),
+          version: precacheVersion.trim() || undefined
+        })
+      });
+      const data = await res.json();
+      if (res.ok) {
+        const sizeKB = data.size ? ` (${(data.size / 1024).toFixed(1)} KB)` : '';
+        setPrecacheResult({
+          success: true,
+          message: data.cached
+            ? `${data.message}`
+            : `${data.message}${sizeKB}`
+        });
+        fetchAllStats();
+      } else {
+        setPrecacheResult({ success: false, message: data.error || 'Pre-cache failed' });
+      }
+    } catch (err) {
+      setPrecacheResult({ success: false, message: err.message });
+    } finally {
+      setPrecacheLoading(false);
     }
   };
 
@@ -186,6 +226,45 @@ const AdminDashboard = () => {
           {scrapeResult && (
             <div className={`scrape-result ${scrapeResult.success ? 'success' : 'error'}`}>
               {scrapeResult.message}
+            </div>
+          )}
+        </section>
+
+        {/* Pre-cache Package Section */}
+        <section className="dashboard-section">
+          <h2>Pre-cache Package</h2>
+          <p className="section-description">Download and cache npm packages for offline use.</p>
+          <div className="scrape-form">
+            <input
+              type="text"
+              className="scrape-input"
+              placeholder="Package name (e.g., lodash)"
+              value={precachePackage}
+              onChange={(e) => setPrecachePackage(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && handlePrecache()}
+              disabled={precacheLoading}
+            />
+            <input
+              type="text"
+              className="scrape-input version-input"
+              placeholder="Version (optional)"
+              value={precacheVersion}
+              onChange={(e) => setPrecacheVersion(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && handlePrecache()}
+              disabled={precacheLoading}
+              style={{ maxWidth: '150px' }}
+            />
+            <button
+              className="btn btn-primary"
+              onClick={handlePrecache}
+              disabled={precacheLoading || !precachePackage.trim()}
+            >
+              {precacheLoading ? 'Downloading...' : 'Pre-cache'}
+            </button>
+          </div>
+          {precacheResult && (
+            <div className={`scrape-result ${precacheResult.success ? 'success' : 'error'}`}>
+              {precacheResult.message}
             </div>
           )}
         </section>

@@ -8,9 +8,30 @@ Run these commands on client PCs to use PackKit as the npm registry:
 npm config set registry http://<SERVER_IP>:4873
 ```
 
-## Example (if server IP is 192.168.137.215)
+## 1. Find the Server IP
+Look at the **PackKit Startup** window on the server (base station). It will show:
+```
+  NETWORK ACCESS (for other PCs):
+    Chat:  http://10.165.212.195:5174  <-- Example IP
+```
+*Note: This IP might change if the server reconnects to WiFi.*
+
+## 2. Configure Client (Run on other PCs)
 ```bash
-npm config set registry http://192.168.137.215:4873
+# Replace <SERVER_IP> with the IP shown in the startup window
+npm config set registry http://<SERVER_IP>:4873
+```
+
+### Example
+If the start script says `http://10.165.212.195:4873`:
+```bash
+npm config set registry http://10.165.212.195:4873
+```
+
+### Alternative (Try if IP keeps changing)
+You can try using the computer name:
+```bash
+npm config set registry http://Nilay:4873
 ```
 
 ## Test Connection

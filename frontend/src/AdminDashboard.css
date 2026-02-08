@@ -262,7 +262,15 @@
 .scrape-form {
     display: flex;
     gap: var(--spacing-md);
-    max-width: 500px;
+    max-width: 600px;
+    flex-wrap: wrap;
+}
+
+.section-description {
+    font-size: 14px;
+    color: var(--text-muted);
+    margin-bottom: var(--spacing-md);
+    margin-top: calc(var(--spacing-lg) * -1 + var(--spacing-xs));
 }
 
 .scrape-input {

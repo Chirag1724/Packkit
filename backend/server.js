@@ -33,7 +33,7 @@ const httpsAgent = new https.Agent({
   minVersion: 'TLSv1.2'
 });
 
-// Download lock to prevent race conditions when multiple users request the same file
+
 const downloadLocks = new Map();
 
 app.use((req, res, next) => {
@@ -72,7 +72,7 @@ const Documentation = mongoose.model('Documentation', DocumentationSchema);
 
 fs.ensureDirSync(CACHE_DIR);
 
-// API Routes
+
 
 app.get('/force-scrape/:name', async (req, res) => {
   const { name } = req.params;
@@ -182,7 +182,94 @@ app.get('/api/security-stats', async (req, res) => {
   }
 });
 
-// NPM Proxy Routes
+
+app.post('/api/precache', async (req, res) => {
+  const { packageName, version } = req.body;
+  if (!packageName) {
+    return res.status(400).json({ error: 'Package name is required' });
+  }
+
+  try {
+
+    const metaRes = await axios.get(`${UPSTREAM_URL}/${packageName}`, { httpsAgent, timeout: 10000 });
+    const meta = metaRes.data;
+
+
+    const targetVersion = version || meta['dist-tags']?.latest;
+    if (!targetVersion || !meta.versions[targetVersion]) {
+      return res.status(404).json({ error: `Version ${version || 'latest'} not found for ${packageName}` });
+    }
+
+    const versionData = meta.versions[targetVersion];
+    const tarballUrl = versionData.dist.tarball;
+    const filename = tarballUrl.split('/').pop();
+    const filePath = path.join(CACHE_DIR, filename);
+
+
+    if (fs.existsSync(filePath)) {
+      return res.json({
+        success: true,
+        message: `${packageName}@${targetVersion} already cached`,
+        cached: true,
+        version: targetVersion
+      });
+    }
+
+
+    const tarballRes = await axios({
+      method: 'get',
+      url: tarballUrl,
+      responseType: 'stream',
+      httpsAgent,
+      timeout: 60000
+    });
+
+    const writer = fs.createWriteStream(filePath);
+    tarballRes.data.pipe(writer);
+
+    await new Promise((resolve, reject) => {
+      writer.on('finish', resolve);
+      writer.on('error', reject);
+    });
+
+
+    const metadataPath = path.join(CACHE_DIR, `${packageName}.json`);
+
+    Object.keys(meta.versions).forEach(v => {
+      if (meta.versions[v].dist && meta.versions[v].dist.tarball) {
+        meta.versions[v].dist.tarball = meta.versions[v].dist.tarball.replace(
+          UPSTREAM_URL,
+          `http://localhost:${PORT}`
+        );
+      }
+    });
+    await fs.writeJson(metadataPath, meta);
+
+
+    const verification = await verifyPackageIntegrity(packageName, targetVersion, filePath);
+    await Package.create({
+      name: packageName,
+      version: targetVersion,
+      cachedPath: filePath,
+      integrity: verification.checksum || 'unknown',
+      verified: verification.verified,
+      verificationDate: new Date(),
+      checksumAlgorithm: 'sha512'
+    });
+
+    res.json({
+      success: true,
+      message: `Cached ${packageName}@${targetVersion}`,
+      version: targetVersion,
+      size: (await fs.stat(filePath)).size
+    });
+  } catch (err) {
+    console.error('Pre-cache error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
 
 app.get('/:name', async (req, res) => {
   const { name } = req.params;
@@ -192,7 +279,7 @@ app.get('/:name', async (req, res) => {
     const response = await axios.get(`${UPSTREAM_URL}/${name}`, { httpsAgent, timeout: 5000 });
     const data = response.data;
 
-    // Rewrite tarball URLs to point to this proxy
+
     Object.keys(data.versions).forEach(v => {
       data.versions[v].dist.tarball = data.versions[v].dist.tarball.replace(
         UPSTREAM_URL,
@@ -200,22 +287,16 @@ app.get('/:name', async (req, res) => {
       );
     });
 
-    // Cache the metadata for offline use
     await fs.writeJson(metadataPath, data);
     res.json(data);
   } catch (e) {
-    // OFFLINE FALLBACK: Serve from cache if available
     if (fs.existsSync(metadataPath)) {
       console.log(`[Offline] Serving cached metadata for ${name}`);
       const cachedData = await fs.readJson(metadataPath);
-      // Still need to update the host in case the IP changed since last online run
       Object.keys(cachedData.versions).forEach(v => {
         const dist = cachedData.versions[v].dist;
         const currentHost = `http://${req.headers.host}`;
-        // Detect if the tarball URL needs updating (if it doesn't already match the current host)
-        if (!dist.tarball.includes(currentHost)) {
-          dist.tarball = dist.tarball.replace(/http:\/\/[^\/]+/, currentHost);
-        }
+        dist.tarball = dist.tarball.replace(/https?:\/\/[^\/]+/, currentHost);
       });
       return res.json(cachedData);
     }
@@ -226,28 +307,23 @@ app.get('/:name', async (req, res) => {
 app.get('/:name/-/:filename', async (req, res) => {
   const { name, filename } = req.params;
   const filePath = path.join(CACHE_DIR, filename);
-  const versionMatch = filename.match(/-[\d.]+(?:-[\w.]+)?\.tgz$/);
+  const versionMatch = filename.match(/-([\d.]+(?:-[\w.]+)?)\.tgz$/);
   const version = versionMatch ? versionMatch[1] : null;
 
-  // If file already exists, serve it immediately
   if (fs.existsSync(filePath)) {
     return fs.createReadStream(filePath).pipe(res);
   }
 
-  // Check if another request is already downloading this file
   if (downloadLocks.has(filename)) {
-    // Wait for the existing download to complete
     try {
       await downloadLocks.get(filename);
       if (fs.existsSync(filePath)) {
         return fs.createReadStream(filePath).pipe(res);
       }
     } catch (err) {
-      // Original download failed, we'll try again below
     }
   }
 
-  // Create a promise that resolves when download completes
   let resolveDownload, rejectDownload;
   const downloadPromise = new Promise((resolve, reject) => {
     resolveDownload = resolve;
@@ -320,7 +396,6 @@ app.listen(PORT, '0.0.0.0', () => {
       }
     }
   }
-  // Prioritize LAN IPs (192.168.x.x or 10.x.x.x) over WSL/Virtual (172.x.x.x)
   networkIP = ips.find(ip => ip.startsWith('192.168.') || ip.startsWith('10.')) || ips[0] || 'localhost';
   console.log(`PackKit server running on port ${PORT}`);
   console.log(`  Local:   http://localhost:${PORT}`);
