@@ -30,8 +30,22 @@ const CACHE_DIR = path.join(__dirname, 'storage');
 
 const httpsAgent = new https.Agent({
   rejectUnauthorized: true,
-  minVersion: 'TLSv1.2'
+  minVersion: 'TLSv1.2',
+  keepAlive: true,           // Reuse connections - avoids TLS handshake overhead
+  maxSockets: 50,            // Allow parallel downloads
+  maxFreeSockets: 10,        // Keep idle connections ready
+  timeout: 60000             // Socket timeout
 });
+
+// Default axios config for faster transfers
+const axiosDefaults = {
+  httpsAgent,
+  timeout: 30000,
+  headers: {
+    'Accept-Encoding': 'gzip, deflate',  // Enable compression
+    'Connection': 'keep-alive'
+  }
+};
 
 
 const downloadLocks = new Map();
@@ -191,7 +205,7 @@ app.post('/api/precache', async (req, res) => {
 
   try {
 
-    const metaRes = await axios.get(`${UPSTREAM_URL}/${packageName}`, { httpsAgent, timeout: 10000 });
+    const metaRes = await axios.get(`${UPSTREAM_URL}/${packageName}`, { ...axiosDefaults, timeout: 10000 });
     const meta = metaRes.data;
 
 
@@ -220,7 +234,7 @@ app.post('/api/precache', async (req, res) => {
       method: 'get',
       url: tarballUrl,
       responseType: 'stream',
-      httpsAgent,
+      ...axiosDefaults,
       timeout: 60000
     });
 
@@ -276,7 +290,7 @@ app.get('/:name', async (req, res) => {
   const metadataPath = path.join(CACHE_DIR, `${name}.json`);
 
   try {
-    const response = await axios.get(`${UPSTREAM_URL}/${name}`, { httpsAgent, timeout: 5000 });
+    const response = await axios.get(`${UPSTREAM_URL}/${name}`, { ...axiosDefaults, timeout: 5000 });
     const data = response.data;
 
 
@@ -336,40 +350,67 @@ app.get('/:name/-/:filename', async (req, res) => {
       method: 'get',
       url: `${UPSTREAM_URL}/${name}/-/${filename}`,
       responseType: 'stream',
-      httpsAgent
+      ...axiosDefaults,
+      timeout: 120000  
     });
     const fileWriter = fs.createWriteStream(filePath);
-    upstream.data.pipe(res);
-    upstream.data.pipe(fileWriter);
+
+    upstream.data.on('data', (chunk) => {
+      res.write(chunk);
+      fileWriter.write(chunk);
+    });
+
+    upstream.data.on('end', () => {
+      res.end();
+      fileWriter.end();
+    });
+
+    upstream.data.on('error', (err) => {
+      console.error(`[Cache] Stream error for ${filename}:`, err.message);
+      fileWriter.destroy();
+      if (!res.headersSent) res.status(500).send('Stream error');
+    });
 
     fileWriter.on('finish', async () => {
+      console.log(`[Cache] File written: ${filename}`);
       downloadLocks.delete(filename);
       resolveDownload();
 
-      if (version) {
-        const verification = await verifyPackageIntegrity(name, version, filePath);
-        if (!verification.verified) return;
-        await Package.create({
-          name,
-          version,
-          cachedPath: filePath,
-          integrity: verification.checksum,
-          verified: true,
-          verificationDate: new Date(),
-          checksumAlgorithm: 'sha512'
-        });
-      } else {
-        await Package.create({ name, cachedPath: filePath, integrity: 'unknown', verified: false });
-      }
-
-      const hasDocs = await Documentation.exists({ packageName: name });
-      if (!hasDocs) {
-        scrapeDocs(name).then(content => {
-          if (content) {
-            Documentation.create({ packageName: name, content });
-            storeDocumentWithEmbeddings(name, content);
+      try {
+        if (version) {
+          let verification = { verified: false, checksum: 'unknown' };
+          try {
+            verification = await verifyPackageIntegrity(name, version, filePath);
+          } catch (verifyErr) {
+            console.log(`[Cache] Verification skipped for ${name}@${version}: ${verifyErr.message}`);
           }
-        }).catch(() => { });
+
+          await Package.create({
+            name,
+            version,
+            cachedPath: filePath,
+            integrity: verification.checksum || 'unknown',
+            verified: verification.verified,
+            verificationDate: new Date(),
+            checksumAlgorithm: 'sha512'
+          });
+          console.log(`[Cache] Saved to DB: ${name}@${version}`);
+        } else {
+          await Package.create({ name, cachedPath: filePath, integrity: 'unknown', verified: false });
+          console.log(`[Cache] Saved to DB: ${name} (no version)`);
+        }
+
+        const hasDocs = await Documentation.exists({ packageName: name });
+        if (!hasDocs) {
+          scrapeDocs(name).then(content => {
+            if (content) {
+              Documentation.create({ packageName: name, content });
+              storeDocumentWithEmbeddings(name, content);
+            }
+          }).catch(() => { });
+        }
+      } catch (dbErr) {
+        console.error(`[Cache Error] Failed to save ${name} to database:`, dbErr.message);
       }
     });
 
