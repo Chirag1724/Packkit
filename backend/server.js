@@ -4,6 +4,7 @@ const axios = require('axios');
 const fs = require('fs-extra');
 const path = require('path');
 const cors = require('cors');
+const https = require('https');
 
 const { scrapeDocs } = require('./services/scraper');
 const { askOllama } = require('./services/ai');
@@ -17,10 +18,7 @@ const {
   hybridSearch,
   getVectorOptimizationStats
 } = require('./services/rag');
-const {
-  verifyPackageIntegrity,
-  getSecurityStats
-} = require('./services/security');
+const { verifyPackageIntegrity, getSecurityStats } = require('./services/security');
 
 const app = express();
 app.use(cors());
@@ -29,27 +27,30 @@ app.use(express.json());
 const PORT = 4873;
 const UPSTREAM_URL = 'https://registry.npmjs.org';
 const CACHE_DIR = path.join(__dirname, 'storage');
-const https = require('https');
+
 const httpsAgent = new https.Agent({
   rejectUnauthorized: true,
   minVersion: 'TLSv1.2'
 });
+
+
+const downloadLocks = new Map();
+
 app.use((req, res, next) => {
-  console.log(` [${new Date().toLocaleTimeString()}] ${req.method} ${req.url}`);
+  console.log(`[${new Date().toLocaleTimeString()}] ${req.method} ${req.url}`);
   next();
 });
-//database
+
 mongoose.connect('mongodb://localhost:27017/Packkit')
   .then(async () => {
-    console.log(' MongoDB Connected Succesfully....');
-
+    console.log('MongoDB connected');
     try {
       await initializeVectorIndices();
     } catch (err) {
-      console.warn('index initialization warning (safe to ignore):', err.message);
+      console.warn('Index initialization warning:', err.message);
     }
   })
-  .catch(err => console.error(' DB Error:', err));
+  .catch(err => console.error('DB Error:', err));
 
 const PackageSchema = new mongoose.Schema({
   name: String,
@@ -71,49 +72,30 @@ const Documentation = mongoose.model('Documentation', DocumentationSchema);
 
 fs.ensureDirSync(CACHE_DIR);
 
-// ========================
-// API ROUTES (must come BEFORE dynamic routes)
-// ========================
 
-// Force scrape route
+
 app.get('/force-scrape/:name', async (req, res) => {
   const { name } = req.params;
-  console.log(` manually triggering scrape for: ${name}`);
-
   try {
-
     const content = await scrapeDocs(name);
-
     if (content) {
-
       await Documentation.deleteMany({ packageName: name });
-
       await Documentation.create({ packageName: name, content });
-
       await storeDocumentWithEmbeddings(name, content);
-
-      console.log(` MANUALLY SAVED DOCS FOR: ${name}`);
-      return res.send(`<h1>Success!</h1><p>Scraped ${content.length} chars for <b>${name}</b>. Embeddings generated. Check Compass now.</p>`);
-    } else {
-      return res.status(500).send(`<h1>Failed</h1><p>Scraper returned null. Check terminal for error.</p>`);
+      return res.json({ success: true, chars: content.length, package: name });
     }
+    return res.status(500).json({ error: 'Scraper returned null' });
   } catch (err) {
-    return res.status(500).send(`Error: ${err.message}`);
+    return res.status(500).json({ error: err.message });
   }
 });
 
-// Chat API
 app.post('/api/chat', async (req, res) => {
   const { question } = req.body;
-  console.log(` User asked: ${question}`);
-
   try {
     const startTime = Date.now();
-
-
     const cached = await getCachedResponse(question);
     if (cached) {
-      console.log(`⚡ Cache HIT! Response in ${Date.now() - startTime}ms`);
       return res.json({
         answer: cached,
         source: 'cache',
@@ -121,181 +103,252 @@ app.post('/api/chat', async (req, res) => {
       });
     }
 
-
     const relevantChunks = await findRelevantChunks(question, 3);
-
     if (relevantChunks.length === 0) {
       return res.json({
-        answer: "No relevant documentation found. Try scraping a package first.",
+        answer: 'No relevant documentation found. Try scraping a package first.',
         source: null,
         responseTime: Date.now() - startTime
       });
     }
 
     const context = relevantChunks
-      .map((chunk, i) => `[Chunk ${i + 1}]\n${chunk.text}`)
+      .map((chunk, i) => `[Source: ${chunk.packageName} | Chunk ${i + 1}]\n${chunk.text}`)
       .join('\n\n');
 
-    console.log(` Using ${relevantChunks.length} chunks (${context.length} chars total)`);
-
-
     const answer = await askOllama(question, context);
-
-
     await cacheResponse(question, answer);
-
-    const elapsed = Date.now() - startTime;
-    console.log(`response ready in ${elapsed}ms`);
 
     res.json({
       answer,
       source: relevantChunks[0]?.packageName || null,
-      responseTime: elapsed,
-      context_length: context.length
+      responseTime: Date.now() - startTime
     });
   } catch (err) {
     console.error('Chat error:', err);
-    res.status(500).json({
-      answer: "Error processing your question.",
-      source: null
-    });
+    res.status(500).json({ answer: 'Error processing your question.', source: null });
   }
 });
 
-// RAG Stats API
 app.get('/api/stats', async (req, res) => {
   try {
-    const stats = await getRAGStats();
-    res.json(stats);
+    res.json(await getRAGStats());
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// Vector Stats API
 app.get('/api/vector-stats', async (req, res) => {
   try {
-    const stats = await getVectorOptimizationStats();
-    res.json(stats);
+    res.json(await getVectorOptimizationStats());
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// Hybrid Search API
 app.post('/api/hybrid-search', async (req, res) => {
-  const { query } = req.body;
-  console.log(` hybrid search: ${query}`);
-
   try {
     const startTime = Date.now();
-    const results = await hybridSearch(query, 5);
-    const elapsed = Date.now() - startTime;
-
+    const results = await hybridSearch(req.body.query, 5);
     res.json({
-      query,
+      query: req.body.query,
       results: results.map(r => ({
         packageName: r.packageName,
         text: r.text?.substring(0, 150) + '...',
         vectorScore: r.vectorScore?.toFixed(3),
-        keywordScore: r.keywordScore,
         combinedScore: r.combinedScore?.toFixed(3)
       })),
-      responseTime: elapsed
+      responseTime: Date.now() - startTime
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// Rebuild Embeddings API
 app.post('/api/rebuild-embeddings/:packageName', async (req, res) => {
-  const { packageName } = req.params;
-  console.log(` rebuilding embeddings for ${packageName}`);
-
   try {
     const { rebuildEmbeddings } = require('./services/rag');
-    const result = await rebuildEmbeddings(packageName);
-    res.json(result);
+    res.json(await rebuildEmbeddings(req.params.packageName));
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// Security Stats API
 app.get('/api/security-stats', async (req, res) => {
   try {
-    const stats = await getSecurityStats();
-    res.json(stats);
+    res.json(await getSecurityStats());
   } catch (err) {
-    console.error('Security stats error:', err.message);
     res.status(500).json({ error: err.message });
   }
 });
 
-// ========================
-// PROXY ROUTES (must come AFTER API routes)
-// ========================
 
-// Package metadata proxy
-app.get('/:name', async (req, res) => {
+app.post('/api/precache', async (req, res) => {
+  const { packageName, version } = req.body;
+  if (!packageName) {
+    return res.status(400).json({ error: 'Package name is required' });
+  }
+
   try {
-    const { name } = req.params;
-    const response = await axios.get(`${UPSTREAM_URL}/${name}`, {
-      httpsAgent: httpsAgent  // Use secure HTTPS agent
+
+    const metaRes = await axios.get(`${UPSTREAM_URL}/${packageName}`, { httpsAgent, timeout: 10000 });
+    const meta = metaRes.data;
+
+
+    const targetVersion = version || meta['dist-tags']?.latest;
+    if (!targetVersion || !meta.versions[targetVersion]) {
+      return res.status(404).json({ error: `Version ${version || 'latest'} not found for ${packageName}` });
+    }
+
+    const versionData = meta.versions[targetVersion];
+    const tarballUrl = versionData.dist.tarball;
+    const filename = tarballUrl.split('/').pop();
+    const filePath = path.join(CACHE_DIR, filename);
+
+
+    if (fs.existsSync(filePath)) {
+      return res.json({
+        success: true,
+        message: `${packageName}@${targetVersion} already cached`,
+        cached: true,
+        version: targetVersion
+      });
+    }
+
+
+    const tarballRes = await axios({
+      method: 'get',
+      url: tarballUrl,
+      responseType: 'stream',
+      httpsAgent,
+      timeout: 60000
     });
-    const data = response.data;
-    Object.keys(data.versions).forEach(v => {
-      data.versions[v].dist.tarball = data.versions[v].dist.tarball.replace(UPSTREAM_URL, `http://localhost:${PORT}`);
+
+    const writer = fs.createWriteStream(filePath);
+    tarballRes.data.pipe(writer);
+
+    await new Promise((resolve, reject) => {
+      writer.on('finish', resolve);
+      writer.on('error', reject);
     });
-    res.json(data);
-  } catch (e) {
-    console.error('Proxy error:', e.message);
-    res.status(500).send(e.message);
+
+
+    const metadataPath = path.join(CACHE_DIR, `${packageName}.json`);
+
+    Object.keys(meta.versions).forEach(v => {
+      if (meta.versions[v].dist && meta.versions[v].dist.tarball) {
+        meta.versions[v].dist.tarball = meta.versions[v].dist.tarball.replace(
+          UPSTREAM_URL,
+          `http://localhost:${PORT}`
+        );
+      }
+    });
+    await fs.writeJson(metadataPath, meta);
+
+
+    const verification = await verifyPackageIntegrity(packageName, targetVersion, filePath);
+    await Package.create({
+      name: packageName,
+      version: targetVersion,
+      cachedPath: filePath,
+      integrity: verification.checksum || 'unknown',
+      verified: verification.verified,
+      verificationDate: new Date(),
+      checksumAlgorithm: 'sha512'
+    });
+
+    res.json({
+      success: true,
+      message: `Cached ${packageName}@${targetVersion}`,
+      version: targetVersion,
+      size: (await fs.stat(filePath)).size
+    });
+  } catch (err) {
+    console.error('Pre-cache error:', err.message);
+    res.status(500).json({ error: err.message });
   }
 });
 
-// Package tarball proxy
+
+
+app.get('/:name', async (req, res) => {
+  const { name } = req.params;
+  const metadataPath = path.join(CACHE_DIR, `${name}.json`);
+
+  try {
+    const response = await axios.get(`${UPSTREAM_URL}/${name}`, { httpsAgent, timeout: 5000 });
+    const data = response.data;
+
+
+    Object.keys(data.versions).forEach(v => {
+      data.versions[v].dist.tarball = data.versions[v].dist.tarball.replace(
+        UPSTREAM_URL,
+        `http://${req.headers.host}`
+      );
+    });
+
+    await fs.writeJson(metadataPath, data);
+    res.json(data);
+  } catch (e) {
+    if (fs.existsSync(metadataPath)) {
+      console.log(`[Offline] Serving cached metadata for ${name}`);
+      const cachedData = await fs.readJson(metadataPath);
+      Object.keys(cachedData.versions).forEach(v => {
+        const dist = cachedData.versions[v].dist;
+        const currentHost = `http://${req.headers.host}`;
+        dist.tarball = dist.tarball.replace(/https?:\/\/[^\/]+/, currentHost);
+      });
+      return res.json(cachedData);
+    }
+    res.status(502).send(`Upstream registry unreachable and no local cache for ${name}`);
+  }
+});
+
 app.get('/:name/-/:filename', async (req, res) => {
   const { name, filename } = req.params;
   const filePath = path.join(CACHE_DIR, filename);
-
-  // Extract version from filename (e.g., package-1.2.3.tgz)
-  const versionMatch = filename.match(/-[\d\.]+(?:-[\w\.]+)?\.tgz$/);
+  const versionMatch = filename.match(/-([\d.]+(?:-[\w.]+)?)\.tgz$/);
   const version = versionMatch ? versionMatch[1] : null;
 
   if (fs.existsSync(filePath)) {
-    console.log(` HIT: ${filename}`);
     return fs.createReadStream(filePath).pipe(res);
   }
 
-  console.log(` MISS: Downloading ${filename}...`);
+  if (downloadLocks.has(filename)) {
+    try {
+      await downloadLocks.get(filename);
+      if (fs.existsSync(filePath)) {
+        return fs.createReadStream(filePath).pipe(res);
+      }
+    } catch (err) {
+    }
+  }
+
+  let resolveDownload, rejectDownload;
+  const downloadPromise = new Promise((resolve, reject) => {
+    resolveDownload = resolve;
+    rejectDownload = reject;
+  });
+  downloadLocks.set(filename, downloadPromise);
+
   try {
     const upstream = await axios({
       method: 'get',
       url: `${UPSTREAM_URL}/${name}/-/${filename}`,
       responseType: 'stream',
-      httpsAgent: httpsAgent  // Use secure HTTPS agent
+      httpsAgent
     });
     const fileWriter = fs.createWriteStream(filePath);
-
     upstream.data.pipe(res);
     upstream.data.pipe(fileWriter);
 
     fileWriter.on('finish', async () => {
-      console.log(`file saved: ${filename}`);
-
+      downloadLocks.delete(filename);
+      resolveDownload();
 
       if (version) {
         const verification = await verifyPackageIntegrity(name, version, filePath);
-
-        if (!verification.verified) {
-          console.error(`  SECURITY: ${filename} failed verification - not caching`);
-
-          return;
-        }
-
-
+        if (!verification.verified) return;
         await Package.create({
           name,
           version,
@@ -305,40 +358,46 @@ app.get('/:name/-/:filename', async (req, res) => {
           verificationDate: new Date(),
           checksumAlgorithm: 'sha512'
         });
-
-        console.log(` Package verified and cached successfully`);
       } else {
-
-        await Package.create({
-          name,
-          cachedPath: filePath,
-          integrity: 'unknown',
-          verified: false
-        });
+        await Package.create({ name, cachedPath: filePath, integrity: 'unknown', verified: false });
       }
-
 
       const hasDocs = await Documentation.exists({ packageName: name });
       if (!hasDocs) {
-        console.log(` auto-scraping docs for: ${name}`);
         scrapeDocs(name).then(content => {
           if (content) {
             Documentation.create({ packageName: name, content });
-
             storeDocumentWithEmbeddings(name, content);
-            console.log(`auto-saved docs for: ${name}`);
           }
-        }).catch(err => {
-          console.error(`scrape error for ${name}:`, err.message);
-        });
+        }).catch(() => { });
       }
     });
+
+    fileWriter.on('error', (err) => {
+      downloadLocks.delete(filename);
+      rejectDownload(err);
+    });
   } catch (e) {
-    console.error('Download error:', e.message);
-    if (!res.headersSent) {
-      res.status(500).send("DL Error");
-    }
+    downloadLocks.delete(filename);
+    rejectDownload(e);
+    if (!res.headersSent) res.status(500).send('Download error');
   }
 });
 
-app.listen(PORT, () => console.log(`NEW_SERVER_ACTIVE on ${PORT} (Wait for MongoDB...)`));
+app.listen(PORT, '0.0.0.0', () => {
+  const os = require('os');
+  const interfaces = os.networkInterfaces();
+  let networkIP = 'localhost';
+  const ips = [];
+  for (const name of Object.keys(interfaces)) {
+    for (const iface of interfaces[name]) {
+      if (iface.family === 'IPv4' && !iface.internal) {
+        ips.push(iface.address);
+      }
+    }
+  }
+  networkIP = ips.find(ip => ip.startsWith('192.168.') || ip.startsWith('10.')) || ips[0] || 'localhost';
+  console.log(`PackKit server running on port ${PORT}`);
+  console.log(`  Local:   http://localhost:${PORT}`);
+  console.log(`  Network: http://${networkIP}:${PORT}`);
+});

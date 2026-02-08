@@ -1,24 +1,15 @@
 const axios = require('axios');
-async function scrapeDocs(packageName) {
-  console.log(`fetching docs for: ${packageName} from Registry...`);
 
+async function scrapeDocs(packageName) {
   try {
     const url = `https://registry.npmjs.org/${packageName}`;
-    const { data } = await axios.get(url);
-    let content = data.readme || '';
-    if (!content) {
-      content = data.description || '';
-    }
-    content = content.substring(0, 5000);
-    if (!content) {
-      console.log('no README found in registry.');
-      return null;
-    }
-    console.log(`retrieved ${content.length} characters.`);
-    return content;
+    const response = await axios.get(url);
+    const readme = response.data.readme || '';
+    return readme.substring(0, 15000);
   } catch (error) {
-    console.log(`fetch failed: ${error.message}`);
+    console.error(`Scrape error for ${packageName}:`, error.message);
     return null;
   }
 }
+
 module.exports = { scrapeDocs };

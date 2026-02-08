@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { Link } from 'react-router-dom';
 import './AdminDashboard.css';
 
 const AdminDashboard = () => {
@@ -7,10 +8,21 @@ const AdminDashboard = () => {
   const [securityStats, setSecurityStats] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [lastUpdated, setLastUpdated] = useState(null);
+
+  // Force Scrape state
+  const [scrapePackage, setScrapePackage] = useState('');
+  const [scrapeLoading, setScrapeLoading] = useState(false);
+  const [scrapeResult, setScrapeResult] = useState(null);
+
+  // Pre-cache state
+  const [precachePackage, setPrecachePackage] = useState('');
+  const [precacheVersion, setPrecacheVersion] = useState('');
+  const [precacheLoading, setPrecacheLoading] = useState(false);
+  const [precacheResult, setPrecacheResult] = useState(null);
 
   useEffect(() => {
     fetchAllStats();
-    // Refresh stats every 30 seconds
     const interval = setInterval(fetchAllStats, 30000);
     return () => clearInterval(interval);
   }, []);
@@ -18,14 +30,15 @@ const AdminDashboard = () => {
   const fetchAllStats = async () => {
     try {
       setLoading(true);
+      const apiHost = window.location.hostname;
       const [statsRes, vectorRes, securityRes] = await Promise.all([
-        fetch('http://localhost:4873/api/stats'),
-        fetch('http://localhost:4873/api/vector-stats'),
-        fetch('http://localhost:4873/api/security-stats')
+        fetch(`http://${apiHost}:4873/api/stats`),
+        fetch(`http://${apiHost}:4873/api/vector-stats`),
+        fetch(`http://${apiHost}:4873/api/security-stats`)
       ]);
 
       if (!statsRes.ok || !vectorRes.ok || !securityRes.ok) {
-        throw new Error('One or more API requests failed');
+        throw new Error('Failed to fetch stats');
       }
 
       const [statsData, vectorData, securityData] = await Promise.all([
@@ -37,37 +50,88 @@ const AdminDashboard = () => {
       setStats(statsData);
       setVectorStats(vectorData);
       setSecurityStats(securityData);
+      setLastUpdated(new Date());
       setError(null);
     } catch (err) {
-      setError('Failed to fetch stats: ' + err.message);
-      console.error(err);
+      setError(err.message);
     } finally {
       setLoading(false);
     }
   };
 
-  const StatCard = ({ title, value, subtitle, icon, trend }) => (
-    <div className="stat-card fade-in">
-      <div className="stat-icon">{icon}</div>
-      <div className="stat-content">
-        <h3 className="stat-title">{title}</h3>
-        <div className="stat-value">{value}</div>
-        {subtitle && <p className="stat-subtitle">{subtitle}</p>}
-        {trend && (
-          <div className={`stat-trend ${trend > 0 ? 'positive' : 'negative'}`}>
-            {trend > 0 ? '↑' : '↓'} {Math.abs(trend)}%
-          </div>
-        )}
-      </div>
+  const handleForceScrape = async () => {
+    if (!scrapePackage.trim()) return;
+    setScrapeLoading(true);
+    setScrapeResult(null);
+    try {
+      const apiHost = window.location.hostname;
+      const res = await fetch(`http://${apiHost}:4873/force-scrape/${scrapePackage.trim()}`);
+      const data = await res.json();
+      if (res.ok) {
+        setScrapeResult({ success: true, message: `Indexed ${data.chars} characters from ${data.package}` });
+        fetchAllStats(); // Refresh stats
+      } else {
+        setScrapeResult({ success: false, message: data.error || 'Scrape failed' });
+      }
+    } catch (err) {
+      setScrapeResult({ success: false, message: err.message });
+    } finally {
+      setScrapeLoading(false);
+    }
+  };
+
+  const handlePrecache = async () => {
+    if (!precachePackage.trim()) return;
+    setPrecacheLoading(true);
+    setPrecacheResult(null);
+    try {
+      const apiHost = window.location.hostname;
+      const res = await fetch(`http://${apiHost}:4873/api/precache`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          packageName: precachePackage.trim(),
+          version: precacheVersion.trim() || undefined
+        })
+      });
+      const data = await res.json();
+      if (res.ok) {
+        const sizeKB = data.size ? ` (${(data.size / 1024).toFixed(1)} KB)` : '';
+        setPrecacheResult({
+          success: true,
+          message: data.cached
+            ? `${data.message}`
+            : `${data.message}${sizeKB}`
+        });
+        fetchAllStats();
+      } else {
+        setPrecacheResult({ success: false, message: data.error || 'Pre-cache failed' });
+      }
+    } catch (err) {
+      setPrecacheResult({ success: false, message: err.message });
+    } finally {
+      setPrecacheLoading(false);
+    }
+  };
+
+  const StatCard = ({ label, value, description }) => (
+    <div className="stat-card">
+      <div className="stat-value">{value}</div>
+      <div className="stat-label">{label}</div>
+      {description && <div className="stat-description">{description}</div>}
     </div>
+  );
+
+  const StatusBadge = ({ status, label }) => (
+    <span className={`status-badge ${status}`}>{label}</span>
   );
 
   if (loading && !stats) {
     return (
-      <div className="admin-dashboard">
-        <div className="dashboard-header">
-          <h1>Admin Dashboard</h1>
+      <div className="admin-container">
+        <div className="admin-loading">
           <div className="loading-spinner"></div>
+          <p>Loading dashboard...</p>
         </div>
       </div>
     );
@@ -75,15 +139,12 @@ const AdminDashboard = () => {
 
   if (error) {
     return (
-      <div className="admin-dashboard">
-        <div className="dashboard-header">
-          <h1>Admin Dashboard</h1>
-        </div>
-        <div className="error-message">
-          <span className="error-icon">⚠️</span>
-          {error}
+      <div className="admin-container">
+        <div className="admin-error">
+          <h2>Unable to load dashboard</h2>
+          <p>{error}</p>
           <button className="btn btn-primary" onClick={fetchAllStats}>
-            Retry
+            Try Again
           </button>
         </div>
       </div>
@@ -91,162 +152,231 @@ const AdminDashboard = () => {
   }
 
   return (
-    <div className="admin-dashboard">
-      <div className="dashboard-header">
-        <div>
+    <div className="admin-container">
+      {/* Header */}
+      <header className="admin-header">
+        <div className="header-left">
+          <Link to="/" className="back-link">
+            ← Back to Chat
+          </Link>
           <h1>Admin Dashboard</h1>
-          <p className="dashboard-subtitle">System Performance & Analytics</p>
         </div>
-        <button className="btn btn-secondary refresh-btn" onClick={fetchAllStats}>
-          🔄 Refresh
-        </button>
-      </div>
-
-      {/* RAG Statistics */}
-      <section className="dashboard-section">
-        <h2 className="section-title">📊 RAG Statistics</h2>
-        <div className="stats-grid">
-          <StatCard
-            title="Total Chunks"
-            value={stats?.totalChunks || 0}
-            icon="📄"
-            subtitle="Text segments stored"
-          />
-          <StatCard
-            title="Embeddings Cached"
-            value={stats?.embeddingsCached || 0}
-            icon="🧠"
-            subtitle="Vector representations"
-          />
-          <StatCard
-            title="Cached Responses"
-            value={stats?.cachedResponses || 0}
-            icon="⚡"
-            subtitle="Quick retrieval"
-          />
-          <StatCard
-            title="Unique Packages"
-            value={stats?.packages || 0}
-            icon="📦"
-            subtitle="Documented packages"
-          />
+        <div className="header-right">
+          {lastUpdated && (
+            <span className="last-updated">
+              Updated {lastUpdated.toLocaleTimeString()}
+            </span>
+          )}
+          <button className="btn btn-secondary" onClick={fetchAllStats}>
+            Refresh
+          </button>
         </div>
-      </section>
+      </header>
 
-      {/* Vector Optimization */}
-      {vectorStats && (
+      {/* Main Content */}
+      <main className="admin-main">
+        {/* RAG Stats Section */}
         <section className="dashboard-section">
-          <h2 className="section-title">🎯 Vector Optimization</h2>
+          <h2>RAG System</h2>
           <div className="stats-grid">
             <StatCard
-              title="Vector Status"
-              value={vectorStats.vectorOptimizationEnabled ? "Active" : "Inactive"}
-              icon="🔍"
-              subtitle={vectorStats.vectorOptimizationEnabled ? "Optimized" : "Not optimized"}
+              label="Total Chunks"
+              value={stats?.totalChunks || 0}
+              description="Text segments indexed"
             />
             <StatCard
-              title="Embedding Coverage"
-              value={`${vectorStats.embeddingCoverage || 0}%`}
-              icon="📈"
-              subtitle="Chunks with vectors"
+              label="Embeddings"
+              value={stats?.embeddingsCached || 0}
+              description="Cached vectors"
             />
             <StatCard
-              title="Chunks with Embeddings"
-              value={vectorStats.chunksWithEmbeddings || 0}
-              icon="🎯"
-              subtitle="Vector-enabled chunks"
+              label="Cached Responses"
+              value={stats?.cachedResponses || 0}
+              description="Quick lookups"
             />
             <StatCard
-              title="Responses Cached"
-              value={vectorStats.responsesCached || 0}
-              icon="💾"
-              subtitle="Stored responses"
+              label="Packages"
+              value={stats?.packages || 0}
+              description="Documented"
             />
           </div>
         </section>
-      )}
 
-      {/* Security Statistics */}
-      {securityStats && (
+        {/* Force Scrape Section */}
         <section className="dashboard-section">
-          <h2 className="section-title">🔒 Security Status</h2>
-          <div className="stats-grid">
-            <StatCard
-              title="Total Verifications"
-              value={securityStats.totalVerifications || 0}
-              icon="🔐"
-              subtitle="Security checks"
+          <h2>Index Package Documentation</h2>
+          <div className="scrape-form">
+            <input
+              type="text"
+              className="scrape-input"
+              placeholder="Enter package name (e.g., express, lodash)"
+              value={scrapePackage}
+              onChange={(e) => setScrapePackage(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && handleForceScrape()}
+              disabled={scrapeLoading}
             />
-            <StatCard
-              title="Successful"
-              value={securityStats.successfulVerifications || 0}
-              icon="✅"
-              subtitle="Verified packages"
-            />
-            <StatCard
-              title="Threats Detected"
-              value={securityStats.threatsDetected || 0}
-              icon="⚠️"
-              subtitle="Security issues"
-            />
-            <StatCard
-              title="Success Rate"
-              value={`${securityStats.successRate || 0}%`}
-              icon="🛡️"
-              subtitle="Security score"
-            />
+            <button
+              className="btn btn-primary"
+              onClick={handleForceScrape}
+              disabled={scrapeLoading || !scrapePackage.trim()}
+            >
+              {scrapeLoading ? 'Indexing...' : 'Index Docs'}
+            </button>
           </div>
-
-          {securityStats.recentEvents && securityStats.recentEvents.length > 0 && (
-            <div className="card verification-list">
-              <h3>📋 Recent Security Events</h3>
-              <div className="verification-items">
-                {securityStats.recentEvents.slice(0, 5).map((event, idx) => (
-                  <div key={idx} className="verification-item">
-                    <div className="verification-info">
-                      <span className="verification-name">{event.packageName}</span>
-                      <span className="verification-version">v{event.version}</span>
-                    </div>
-                    <div className="verification-meta">
-                      <span className={`verification-algo ${event.eventType === 'success' ? 'success' : event.eventType === 'threat_detected' ? 'threat' : 'failure'}`}>
-                        {event.eventType === 'success' ? '✅' : event.eventType === 'threat_detected' ? '🚨' : '❌'} {event.eventType}
-                      </span>
-                      <span className="verification-date">
-                        {new Date(event.timestamp).toLocaleDateString()}
-                      </span>
-                    </div>
-                  </div>
-                ))}
-              </div>
+          {scrapeResult && (
+            <div className={`scrape-result ${scrapeResult.success ? 'success' : 'error'}`}>
+              {scrapeResult.message}
             </div>
           )}
         </section>
-      )}
 
-      {/* System Health */}
-      <section className="dashboard-section">
-        <h2 className="section-title">💚 System Health</h2>
-        <div className="health-grid">
-          <div className="health-card">
-            <div className="health-status success">
-              <span className="health-dot"></span>
-              Database Connected
+        {/* Pre-cache Package Section */}
+        <section className="dashboard-section">
+          <h2>Pre-cache Package</h2>
+          <p className="section-description">Download and cache npm packages for offline use.</p>
+          <div className="scrape-form">
+            <input
+              type="text"
+              className="scrape-input"
+              placeholder="Package name (e.g., lodash)"
+              value={precachePackage}
+              onChange={(e) => setPrecachePackage(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && handlePrecache()}
+              disabled={precacheLoading}
+            />
+            <input
+              type="text"
+              className="scrape-input version-input"
+              placeholder="Version (optional)"
+              value={precacheVersion}
+              onChange={(e) => setPrecacheVersion(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && handlePrecache()}
+              disabled={precacheLoading}
+              style={{ maxWidth: '150px' }}
+            />
+            <button
+              className="btn btn-primary"
+              onClick={handlePrecache}
+              disabled={precacheLoading || !precachePackage.trim()}
+            >
+              {precacheLoading ? 'Downloading...' : 'Pre-cache'}
+            </button>
+          </div>
+          {precacheResult && (
+            <div className={`scrape-result ${precacheResult.success ? 'success' : 'error'}`}>
+              {precacheResult.message}
+            </div>
+          )}
+        </section>
+
+        {/* Vector Stats Section */}
+        {vectorStats && (
+          <section className="dashboard-section">
+            <h2>Vector Search</h2>
+            <div className="stats-grid">
+              <StatCard
+                label="Status"
+                value={vectorStats.vectorOptimizationEnabled ? 'Active' : 'Inactive'}
+                description="Search engine"
+              />
+              <StatCard
+                label="Coverage"
+                value={`${vectorStats.embeddingCoverage || 0}%`}
+                description="Chunks with vectors"
+              />
+              <StatCard
+                label="Vector Chunks"
+                value={vectorStats.chunksWithEmbeddings || 0}
+                description="Searchable"
+              />
+              <StatCard
+                label="Response Cache"
+                value={vectorStats.responsesCached || 0}
+                description="Stored answers"
+              />
+            </div>
+          </section>
+        )}
+
+        {/* Security Stats Section */}
+        {securityStats && (
+          <section className="dashboard-section">
+            <h2>Security</h2>
+            <div className="stats-grid">
+              <StatCard
+                label="Verifications"
+                value={securityStats.totalVerifications || 0}
+                description="Total checks"
+              />
+              <StatCard
+                label="Successful"
+                value={securityStats.successfulVerifications || 0}
+                description="Passed checks"
+              />
+              <StatCard
+                label="Threats"
+                value={securityStats.threatsDetected || 0}
+                description="Issues found"
+              />
+              <StatCard
+                label="Success Rate"
+                value={`${securityStats.successRate || 0}%`}
+                description="Security score"
+              />
+            </div>
+
+            {securityStats.recentEvents?.length > 0 && (
+              <div className="events-table">
+                <h3>Recent Events</h3>
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Package</th>
+                      <th>Version</th>
+                      <th>Status</th>
+                      <th>Date</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {securityStats.recentEvents.slice(0, 5).map((event, idx) => (
+                      <tr key={idx}>
+                        <td>{event.packageName}</td>
+                        <td>{event.version || '-'}</td>
+                        <td>
+                          <StatusBadge
+                            status={event.eventType === 'success' ? 'success' : event.eventType === 'threat_detected' ? 'error' : 'warning'}
+                            label={event.eventType}
+                          />
+                        </td>
+                        <td>{new Date(event.timestamp).toLocaleDateString()}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </section>
+        )}
+
+        {/* System Health */}
+        <section className="dashboard-section">
+          <h2>System Health</h2>
+          <div className="health-indicators">
+            <div className="health-item">
+              <span className="health-dot success"></span>
+              <span>Database Connected</span>
+            </div>
+            <div className="health-item">
+              <span className="health-dot success"></span>
+              <span>API Server Running</span>
+            </div>
+            <div className="health-item">
+              <span className={`health-dot ${vectorStats?.vectorOptimizationEnabled ? 'success' : 'warning'}`}></span>
+              <span>Vector Search</span>
             </div>
           </div>
-          <div className="health-card">
-            <div className="health-status success">
-              <span className="health-dot"></span>
-              API Server Running
-            </div>
-          </div>
-          <div className="health-card">
-            <div className="health-status success">
-              <span className="health-dot"></span>
-              Vector Search Active
-            </div>
-          </div>
-        </div>
-      </section>
+        </section>
+      </main>
     </div>
   );
 };

@@ -1,4 +1,4 @@
+/* App wrapper - minimal */
 .app {
   min-height: 100vh;
-  background: var(--gradient-primary);
 }

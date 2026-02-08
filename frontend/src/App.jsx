@@ -1,5 +1,4 @@
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
-import Navigation from './Navigation';
 import AdminDashboard from './AdminDashboard';
 import Chatbot from './Chatbot';
 import './App.css';
@@ -7,14 +6,17 @@ import './App.css';
 function App() {
   return (
     <Router>
-      <div className="app">
-        <Navigation />
-        <Routes>
-          <Route path="/" element={<Navigate to="/dashboard" replace />} />
-          <Route path="/dashboard" element={<AdminDashboard />} />
-          <Route path="/chat" element={<Chatbot />} />
-        </Routes>
-      </div>
+      <Routes>
+        {/* Public routes - Chatbot */}
+        <Route path="/" element={<Chatbot />} />
+        <Route path="/chat" element={<Chatbot />} />
+
+        {/* Admin route - Dashboard */}
+        <Route path="/admin" element={<AdminDashboard />} />
+
+        {/* Redirect old dashboard route to admin */}
+        <Route path="/dashboard" element={<Navigate to="/admin" replace />} />
+      </Routes>
     </Router>
   );
 }
