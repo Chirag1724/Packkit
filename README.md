@@ -231,11 +231,13 @@ packkit/
 
 ---
 
-## Contributors
+## Teammates
 
-<a href="https://github.com/USERNAME/packkit/graphs/contributors">
-  <img src="https://contrib.rocks/image?repo=USERNAME/packkit" alt="Contributors" />
-</a>
+<div align="left">
+
+[![Teammates](https://contrib.rocks/image?repo=Chirag1724/Packkit)](https://github.com/Chirag1724/Packkit/graphs/contributors)
+
+</div>
 
 ---
 
