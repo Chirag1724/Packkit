@@ -45,7 +45,7 @@ npm config set registry http://YOUR_SERVER_IP:4873
 npm install express  # Automatically cached and shared!
 ```
 
-Any package installed by any team member becomes instantly available to everyone on the LAN.
+Any package installed by any client becomes instantly available to everyone on the LAN.
 
 ### 2. RAG-Powered AI Assistant
 Built with **Retrieval-Augmented Generation (RAG)**:
@@ -153,7 +153,7 @@ PackKit server running on port 4873
 ```
 
 ### Client Configuration
-On team members' machines:
+On client machines:
 ```bash
 npm config set registry http://192.168.1.100:4873
 ```
