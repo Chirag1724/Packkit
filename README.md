@@ -1,4 +1,5 @@
-# PackKit
+<div align="center">
+<h1>PackKit</h1>
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Node.js](https://img.shields.io/badge/Node.js-18%2B-green.svg)](https://nodejs.org/)
@@ -7,6 +8,7 @@
 **A Private NPM Registry with AI-Powered Documentation Assistant**
 
 PackKit transforms your team's development workflow by providing intelligent package caching, offline capabilities, and AI-driven documentation assistance—all running locally on your network.
+</div>
 
 ---
 
@@ -112,8 +114,7 @@ POST /api/precache
 
 ```bash
 # 1. Clone the repository
-git clone https://github.com/YOUR_USERNAME/packkit.git
-cd packkit
+git clone https://github.com/Chirag1724/Packkit.git
 
 # 2. Pull required AI models
 ollama pull llama3.2:latest
